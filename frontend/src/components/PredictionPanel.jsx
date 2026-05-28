@@ -280,7 +280,7 @@ export default function App() {
               },
               {
                 label: 'Accuracy',
-                value: '96%',
+                value: '79%',
               },
               {
                 label: 'Backend',

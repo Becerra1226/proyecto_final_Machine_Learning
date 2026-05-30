@@ -6,7 +6,7 @@ import joblib
 from pycaret.classification import load_model, predict_model
 import os
 
-app = FastAPI(title="API de Predicción de ACV")
+app = FastAPI(title="API de Predicción de ACV - Ensemble Híbrido")
 
 # Permitir que el Frontend (React) se conecte en el futuro
 app.add_middleware(
@@ -19,7 +19,8 @@ app.add_middleware(
 
 # Definir las rutas locales dentro de la estructura del backend
 SCALER_PATH = os.path.join("app", "models", "scaler.pkl")
-MODEL_PATH = os.path.join("app", "models", "final_logistic_regression_model") # PyCaret busca el .pkl solo
+# ACTUALIZADO: Nuevo modelo con SMOTE
+MODEL_PATH = os.path.join("app", "models", "final_logistic_regression_smote") 
 
 if not os.path.exists(SCALER_PATH):
     raise FileNotFoundError(f"No se encontró el escalador en {SCALER_PATH}. Verifica que el archivo esté en la carpeta app/models/")
@@ -43,7 +44,6 @@ class PatientInput(BaseModel):
     work_type: str
     smoking_status: str
 
-# El orden estricto de columnas que exige tu scaler.pkl
 FEATURES_ORDER = [
     'gender', 'age', 'hypertension', 'heart_disease', 'ever_married', 
     'Residence_type', 'avg_glucose_level', 'bmi',
@@ -51,12 +51,21 @@ FEATURES_ORDER = [
     'smoking_status_formerly smoked', 'smoking_status_never smoked', 'smoking_status_smokes'
 ]
 
+def map_risk_final(p):
+    if p < 0.15: return "RIESGO BAJO"
+    elif p < 0.30: return "RIESGO MODERADO"
+    elif p < 0.60: return "RIESGO ELEVADO"
+    elif p < 0.80: return "RIESGO ALTO"
+    else: return "RIESGO MUY ALTO"
+
 @app.post("/predict")
 def predict_stroke(patient: PatientInput):
     try:
         data = patient.dict()
         
-        # 1. Mapeos Binarios (Label Encoding manual)
+        # ==========================================
+        # 1. PREPARACIÓN DE DATOS PARA ML
+        # ==========================================
         processed = {
             "gender": 1 if data["gender"] == "Male" else 0,
             "age": data["age"],
@@ -68,32 +77,105 @@ def predict_stroke(patient: PatientInput):
             "bmi": data["bmi"]
         }
         
-        # 2. Inicializar columnas de One-Hot Encoding en 0
         for col in FEATURES_ORDER:
             if col not in processed:
                 processed[col] = 0
-        
-        # 3. Activar la columna correspondiente (drop_first maneja automáticamente Govt_job y Unknown en 0)
+                
         work_col = f"work_type_{data['work_type']}"
         smoke_col = f"smoking_status_{data['smoking_status']}"
         
-        if work_col in processed:
-            processed[work_col] = 1
-        if smoke_col in processed:
-            processed[smoke_col] = 1
+        if work_col in processed: processed[work_col] = 1
+        if smoke_col in processed: processed[smoke_col] = 1
             
-        # 4. Crear DataFrame y reordenar columnas
         df_input = pd.DataFrame([processed])[FEATURES_ORDER]
-        
-        # 5. Escalar variables numéricas
         df_scaled = pd.DataFrame(scaler.transform(df_input), columns=FEATURES_ORDER)
         
-        # 6. Predicción con PyCaret
+        # ==========================================
+        # 2. PREDICCIÓN MODELO ML
+        # ==========================================
         prediction_df = predict_model(model, data=df_scaled)
+        prediction_label = int(prediction_df['prediction_label'].iloc[0])
+        prediction_score = float(prediction_df['prediction_score'].iloc[0])
         
+        # Corregir la probabilidad de la clase 1 (ACV)
+        if prediction_label == 1:
+            pos_prob = prediction_score
+        else:
+            pos_prob = 1.0 - prediction_score
+
+        # ==========================================
+        # 3. EVALUACIÓN CLÍNICA (REGLAS)
+        # ==========================================
+        clinical_score = 0.0
+        
+        if data["hypertension"] == 1: clinical_score += 2.0
+        if data["heart_disease"] == 1: clinical_score += 2.0
+        
+        glucose = data["avg_glucose_level"]
+        if glucose > 200: clinical_score += 1.5
+        elif glucose > 126: clinical_score += 1.0
+            
+        bmi = data["bmi"]
+        if bmi >= 30: clinical_score += 1.0
+        elif bmi >= 25: clinical_score += 0.5
+            
+        smoke_status = data["smoking_status"]
+        if smoke_status == "smokes": clinical_score += 1.0
+        elif smoke_status == "formerly smoked": clinical_score += 0.3
+            
+        age = data["age"]
+        if age > 60: clinical_score += 1.0
+        elif age > 50: clinical_score += 0.5
+
+        if clinical_score >= 4.0:
+            clinical_category, clinical_equiv_prob = "RIESGO MUY ALTO", 0.8
+        elif clinical_score >= 2.5:
+            clinical_category, clinical_equiv_prob = "RIESGO ALTO", 0.65
+        elif clinical_score >= 1.5:
+            clinical_category, clinical_equiv_prob = "RIESGO MODERADO", 0.4
+        else:
+            clinical_category, clinical_equiv_prob = "RIESGO BAJO", 0.15
+
+        # ==========================================
+        # 4. ENSEMBLE HÍBRIDO
+        # ==========================================
+        if clinical_score >= 4.0:
+            weight_ml, weight_clinical = 0.15, 0.85
+        elif clinical_score >= 2.5:
+            weight_ml, weight_clinical = 0.35, 0.65
+        else:
+            weight_ml, weight_clinical = 0.60, 0.40
+
+        hybrid_prob = (weight_ml * pos_prob) + (weight_clinical * clinical_equiv_prob)
+        final_category = map_risk_final(hybrid_prob)
+
+        # Determinar recomendaciones
+        if hybrid_prob >= 0.60:
+            recommendation = "🚨 RIESGO ELEVADO/ALTO - Se recomienda evaluación clínica urgente"
+        elif hybrid_prob >= 0.30:
+            recommendation = "⚠️ RIESGO MODERADO - Se recomienda seguimiento clínico"
+        else:
+            recommendation = "✓ RIESGO BAJO - Continuar con monitoreo rutinario"
+
+        # ==========================================
+        # 5. RESPUESTA DE LA API
+        # ==========================================
         return {
-            "prediction": int(prediction_df['prediction_label'].iloc[0]),
-            "probability": float(prediction_df['prediction_score'].iloc[0])
+            "ml_model": {
+                "prediction_label": prediction_label,
+                "probability_stroke": round(pos_prob, 4)
+            },
+            "clinical_rules": {
+                "score": clinical_score,
+                "category": clinical_category,
+                "probability_equivalent": clinical_equiv_prob
+            },
+            "hybrid_ensemble": {
+                "final_probability": round(hybrid_prob, 4),
+                "final_category": final_category,
+                "weights_used": {"ml": weight_ml, "clinical": weight_clinical},
+                "recommendation": recommendation
+            }
         }
         
     except Exception as e:

@@ -151,9 +151,9 @@ def predict_stroke(patient: PatientInput):
 
         # Determinar recomendaciones
         if hybrid_prob >= 0.60:
-            recommendation = "🚨 RIESGO ELEVADO/ALTO - Se recomienda evaluación clínica urgente"
+            recommendation = "RIESGO ELEVADO/ALTO - Se recomienda evaluación clínica urgente"
         elif hybrid_prob >= 0.30:
-            recommendation = "⚠️ RIESGO MODERADO - Se recomienda seguimiento clínico"
+            recommendation = "RIESGO MODERADO - Se recomienda seguimiento clínico"
         else:
             recommendation = "✓ RIESGO BAJO - Continuar con monitoreo rutinario"
 

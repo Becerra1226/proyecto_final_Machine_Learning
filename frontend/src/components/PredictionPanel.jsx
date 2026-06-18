@@ -229,7 +229,7 @@ export default function App() {
 
     try {
       const response = await axios.post(
-        'http://127.0.0.1:8000/predict',
+        'https://proyecto-final-machine-learning-m00e.onrender.com/predict',
         formData
       );
 

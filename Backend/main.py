@@ -3,12 +3,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import pandas as pd
 import joblib
-from pycaret.classification import load_model, predict_model
 import os
 
 app = FastAPI(title="API de Predicción de ACV - Ensemble Híbrido")
 
-# Permitir que el Frontend (React) se conecte en el futuro
+# Permitir que el Frontend (React) se conecte
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"], 
@@ -19,17 +18,25 @@ app.add_middleware(
 
 # Definir las rutas locales dentro de la estructura del backend
 SCALER_PATH = os.path.join("app", "models", "scaler.pkl")
-# ACTUALIZADO: Nuevo modelo con SMOTE
-MODEL_PATH = os.path.join("app", "models", "final_logistic_regression_smote") 
+# NOTA: Asegúrate de añadir el ".pkl" al nombre del archivo si tu archivo en disco lo tiene
+MODEL_PATH = os.path.join("app", "models", "final_logistic_regression_smote_limpio.pkl") 
 
 if not os.path.exists(SCALER_PATH):
-    raise FileNotFoundError(f"No se encontró el escalador en {SCALER_PATH}. Verifica que el archivo esté en la carpeta app/models/")
+    raise FileNotFoundError(f"No se encontró el escalador en {SCALER_PATH}. Verifica la carpeta app/models/")
 
-# Cargar el Scaler y el Modelo en memoria al iniciar el servidor
-print("Cargando componentes de Machine Learning...")
+if not os.path.exists(MODEL_PATH):
+    # Si PyCaret lo guardó sin la extensión explícita en tu script, búscalo también sin ella
+    ALTERNATIVE_PATH = os.path.join("app", "models", "final_logistic_regression_smote")
+    if os.path.exists(ALTERNATIVE_PATH):
+        MODEL_PATH = ALTERNATIVE_PATH
+    else:
+        raise FileNotFoundError(f"No se encontró el modelo en {MODEL_PATH}. Verifica la carpeta app/models/")
+
+# Cargar el Scaler y el Modelo en memoria usando puramente Joblib
+print("Cargando componentes de Machine Learning con Joblib...")
 scaler = joblib.load(SCALER_PATH)
-model = load_model(MODEL_PATH)
-print("¡Componentes cargados con éxito!")
+model = joblib.load(MODEL_PATH) 
+print("¡Componentes cargados con éxito de forma nativa!")
 
 # Definir el formato del JSON que va a recibir la API
 class PatientInput(BaseModel):
@@ -91,18 +98,15 @@ def predict_stroke(patient: PatientInput):
         df_scaled = pd.DataFrame(scaler.transform(df_input), columns=FEATURES_ORDER)
         
         # ==========================================
-        # 2. PREDICCIÓN MODELO ML
+        # 2. PREDICCIÓN MODELO ML (NATIVO SKLEARN / JOBLIB)
         # ==========================================
-        prediction_df = predict_model(model, data=df_scaled)
-        prediction_label = int(prediction_df['prediction_label'].iloc[0])
-        prediction_score = float(prediction_df['prediction_score'].iloc[0])
+        # predict_proba devuelve un array: [[prob_clase_0, prob_clase_1]]
+        probabilities = model.predict_proba(df_scaled)[0]
+        pos_prob = float(probabilities[1])  # Probabilidad directa de la clase 1 (ACV)
         
-        # Corregir la probabilidad de la clase 1 (ACV)
-        if prediction_label == 1:
-            pos_prob = prediction_score
-        else:
-            pos_prob = 1.0 - prediction_score
-
+        # Obtenemos la etiqueta predicha final (0 o 1)
+        prediction_label = int(model.predict(df_scaled)[0])
+        
         # ==========================================
         # 3. EVALUACIÓN CLÍNICA (REGLAS)
         # ==========================================

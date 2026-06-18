@@ -19,7 +19,7 @@ app.add_middleware(
 # Definir las rutas locales dentro de la estructura del backend
 SCALER_PATH = os.path.join("app", "models", "scaler.pkl")
 # NOTA: Asegúrate de añadir el ".pkl" al nombre del archivo si tu archivo en disco lo tiene
-MODEL_PATH = os.path.join("app", "models", "final_logistic_regression_smote.pkl") 
+MODEL_PATH = os.path.join("app", "models", "final_logistic_regression_smote_limpio.pkl") 
 
 if not os.path.exists(SCALER_PATH):
     raise FileNotFoundError(f"No se encontró el escalador en {SCALER_PATH}. Verifica la carpeta app/models/")
